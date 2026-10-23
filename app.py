@@ -1,17 +1,37 @@
+import streamlit as st
 import torch
-import gradio as gr
-import os
 from pydub import AudioSegment
 from pydub.effects import normalize
 from pydub.silence import split_on_silence
 from f5_tts.api import F5TTS
 from gtts import gTTS
+import os
+import tempfile
+
+# إعداد الصفحة
+st.set_page_config(page_title="Pro Voice Cloner", layout="centered")
+
+# تصميم الصفحة
+st.markdown("""
+    <style>
+    .main { background-color: #0f172a; color: #f8fafc; }
+    h1 { color: #38bdf8; text-align: center; font-weight: 800; }
+    </style>
+    """, unsafe_allow_html=True)
+
+st.title("🎙️ Pro Voice Cloner Studio")
+st.write("استنسخ أي صوت بجودة عالية. ارفع العينة، اكتب النص، واستمتع.")
+
+# تحميل الموديل (باستخدام cache_resource عشان يحمله مرة واحدة)
+@st.cache_resource
+def load_models():
+    with st.spinner("جاري تحميل الموديل... استنى شوية (أول مرة بس)"):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        f5tts = F5TTS(device=device)
+    return f5tts
 
 # تحميل الموديل
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Running on: {device}")
-f5tts = F5TTS(device=device)
-print("Model loaded successfully ✓")
+f5tts = load_models()
 
 def remove_silence_from_audio(audio_path, min_silence_len=200, silence_thresh=-40):
     audio = AudioSegment.from_file(audio_path)
@@ -23,83 +43,62 @@ def remove_silence_from_audio(audio_path, min_silence_len=200, silence_thresh=-4
         combined.export(audio_path, format="wav")
     return audio_path
 
-def generate_voice(text, speaker_audio, language, speed, consent):
+with st.sidebar:
+    st.header("Settings")
+    language = st.radio("اللغة", ["English (USA)", "Arabic"])
+    speed = st.slider("السرعة", 0.4, 1.2, 0.65)
+    consent = st.checkbox("أوافق على أنني أملك هذا الصوت أو لدي إذن باستخدامه")
+
+uploaded_audio = st.file_uploader("ارفع العينة (10-15 ثانية)", type=["wav", "mp3"])
+text_input = st.text_area("النص", placeholder="اكتب النص هنا...")
+
+if st.button("🎧 توليد الصوت", type="primary"):
     if not consent:
-        return None, "⚠️ You must agree to the terms first."
-    if not text or not speaker_audio:
-        return None, "Error: Please provide text and audio."
-    try:
-        audio = AudioSegment.from_file(speaker_audio)
-        clean_audio = normalize(audio)
-        clean_audio_path = "clean_ref.wav"
-        clean_audio.export(clean_audio_path, format="wav")
+        st.error("⚠️ You must agree to the terms first.")
+    elif not text_input or not uploaded_audio:
+        st.error("Error: Please provide text and audio.")
+    else:
+        with st.spinner("جاري التوليد... استنى شوية"):
+            try:
+                # حفظ الصوت المرفوع
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
+                    tmp_audio.write(uploaded_audio.read())
+                    speaker_audio = tmp_audio.name
 
-        output_path = "output.wav"
+                # تنظيف الصوت
+                audio = AudioSegment.from_file(speaker_audio)
+                clean_audio = normalize(audio)
+                clean_audio_path = "clean_ref.wav"
+                clean_audio.export(clean_audio_path, format="wav")
 
-        if language == "English (USA)":
-            f5tts.infer(
-                ref_file=clean_audio_path,
-                ref_text="", 
-                gen_text=text,
-                file_wave=output_path,
-                speed=speed,
-                remove_silence=True,
-                nfe_step=64,
-                cfg_strength=2.5
-            )
-        else:
-            tts_ar = gTTS(text=text, lang='ar', slow=False)
-            tts_ar.save("ar_temp.mp3")
-            ar_audio = AudioSegment.from_file("ar_temp.mp3")
-            ar_audio.export(output_path, format="wav")
+                output_path = "output.wav"
 
-        remove_silence_from_audio(output_path, min_silence_len=250, silence_thresh=-45)
+                if language == "English (USA)":
+                    f5tts.infer(
+                        ref_file=clean_audio_path,
+                        ref_text="", 
+                        gen_text=text_input,
+                        file_wave=output_path,
+                        speed=speed,
+                        remove_silence=True,
+                        nfe_step=64,
+                        cfg_strength=2.5
+                    )
+                else:
+                    tts_ar = gTTS(text=text_input, lang='ar', slow=False)
+                    tts_ar.save("ar_temp.mp3")
+                    ar_audio = AudioSegment.from_file("ar_temp.mp3")
+                    ar_audio.export(output_path, format="wav")
 
-        generated_audio = AudioSegment.from_file(output_path)
-        final_audio = generated_audio.low_pass_filter(3000) 
-        final_audio = normalize(final_audio)
-        final_audio.export(output_path, format="wav")
+                remove_silence_from_audio(output_path, min_silence_len=250, silence_thresh=-45)
 
-        return output_path, "✅ Success! High Quality Generated."
-    except Exception as e:
-        return None, f"❌ Error: {str(e)}"
+                generated_audio = AudioSegment.from_file(output_path)
+                final_audio = generated_audio.low_pass_filter(3000) 
+                final_audio = normalize(final_audio)
+                final_audio.export(output_path, format="wav")
 
-custom_css = """
-body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-h1 { color: #38bdf8; text-align: center; font-weight: 800; }
-.gr-box { background: #1e293b; border-radius: 12px; padding: 15px; border: 1px solid #334155; }
-.gr-button { background: linear-gradient(90deg, #3b82f6, #06b6d4); color: white; font-weight: bold; border: none; border-radius: 8px; padding: 10px 20px; }
-.gr-button:hover { opacity: 0.9; }
-"""
-
-with gr.Blocks(css=custom_css, title="Pro Voice Cloner") as demo:
-    gr.Markdown("# 🎙️ Pro Voice Cloner Studio")
-    gr.Markdown("### استنسخ أي صوت بجودة عالية. ارفع العينة، اكتب النص، واستمتع.")
-    
-    with gr.Row():
-        with gr.Column(scale=1, elem_classes="gr-box"):
-            gr.Markdown("### 1. Reference Audio")
-            audio_input = gr.Audio(type="filepath", label="ارفع العينة (10-15 ثانية)")
-            
-            gr.Markdown("### 2. Text & Settings")
-            text_input = gr.Textbox(label="النص", lines=3, placeholder="اكتب النص هنا...")
-            language_input = gr.Radio(choices=["English (USA)", "Arabic"], value="English (USA)", label="اللغة")
-            speed_input = gr.Slider(minimum=0.4, maximum=1.2, value=0.65, label="السرعة (Speed)")
-            
-            consent_input = gr.Checkbox(label="أوافق على أنني أملك هذا الصوت أو لدي إذن باستخدامه", value=True)
-            
-            btn = gr.Button("🎧 توليد الصوت", variant="primary", elem_classes="gr-button")
-            
-        with gr.Column(scale=1, elem_classes="gr-box"):
-            gr.Markdown("### 3. Result")
-            output_audio = gr.Audio(label="الصوت الناتج", type="filepath")
-            status = gr.Textbox(label="الحالة", interactive=False)
-
-    btn.click(
-        fn=generate_voice,
-        inputs=[text_input, audio_input, language_input, speed_input, consent_input],
-        outputs=[output_audio, status]
-    )
-
-# السطر ده متعدل عشان يشتغل على Render
-demo.launch(server_name="0.0.0.0", server_port=7860)
+                st.success("✅ Success! High Quality Generated.")
+                st.audio(output_path, format="audio/wav")
+                
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
