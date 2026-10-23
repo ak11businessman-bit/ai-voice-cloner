@@ -1,0 +1,6 @@
+gradio
+f5-tts
+pydub
+gTTS
+torch
+torchaudio
